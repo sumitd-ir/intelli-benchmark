@@ -77,8 +77,8 @@ flowchart LR
     end
 
     subgraph AppRunner["AWS App Runner"]
-        URL[/api/v1/spreadsheet/extract/url]
-        UPL[/api/v1/spreadsheet/extract/upload]
+        URL["/api/v1/spreadsheet/extract/url"]
+        UPL["/api/v1/spreadsheet/extract/upload"]
     end
 
     S3 -->|Pre-signed URL| S3M
@@ -107,10 +107,10 @@ sequenceDiagram
     S3-->>Runner: Object keys
 
     loop For each file
-        Runner->>Runner: Presign / prepare stream
-        Runner->>API: POST /url (JSON) or /upload (multipart)
+        Runner->>Runner: Presign or prepare stream
+        Runner->>API: POST /url JSON or /upload multipart
         Note over API: Process extract
-        API-->>Runner: Response (status, body)
+        API-->>Runner: Response with status and body
 
         alt 429 or 5xx
             Runner->>Runner: Jittered exponential backoff
