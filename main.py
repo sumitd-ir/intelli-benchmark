@@ -6,6 +6,7 @@ Usage:
   python main.py -c 5 -m url --report ./Executive_Summary.md
   python main.py --report-only --db ./intelli_extract.db --report ./Executive_Summary.md
   python main.py --clean-db --db ./intelli_extract.db
+  python main.py --s3-url http://localhost:9000   # custom S3-compatible endpoint
 """
 
 import argparse
@@ -54,6 +55,7 @@ def parse_args():
         default=",".join(DEFAULT_ALLOWED_EXTENSIONS),
         help="Comma-separated file extensions to consider from S3 (e.g. .xlsx,.csv). Default: .xlsx,.xls,.csv,.ods. Use empty string to allow all.",
     )
+    p.add_argument("--s3-url", default=None, help="Custom S3 endpoint URL (e.g. http://localhost:9000 for MinIO). Defaults to standard AWS S3.")
     p.add_argument("--report-only", action="store_true", help="Only generate report from existing DB; no test run")
     p.add_argument("--clean-db", action="store_true", help="Clear all rows from the DB and exit (use --db to set path)")
     return p.parse_args()
@@ -98,6 +100,7 @@ def _sync_phase(args, allowed_extensions) -> dict[str, Path]:
                     local_dir=args.local_dir,
                     allowed_extensions=allowed_extensions,
                     limit=args.limit,
+                    endpoint_url=args.s3_url,
                 )
             for p in synced_paths:
                 local_files_map[p.name] = p
@@ -116,6 +119,7 @@ def _discovery_phase(args, allowed_extensions) -> list[tuple[str, str]]:
                 prefix=args.prefix,
                 allowed_extensions=allowed_extensions if allowed_extensions else None,
                 limit=args.limit,
+                endpoint_url=args.s3_url,
             )
         cli_ui.print_info(f"Discovered {len(urls)} objects in S3")
         return urls

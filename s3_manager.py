@@ -17,9 +17,12 @@ DEFAULT_BUCKET = "intelli-extract-tech-challenge-891377258245"
 DEFAULT_EXPIRY = 3600  # seconds
 
 
-def get_s3_client(region: str | None = None):
+def get_s3_client(region: str | None = None, endpoint_url: str | None = None):
     """Return boto3 S3 client using default credential chain."""
-    return boto3.client("s3", region_name=region or os.environ.get("AWS_REGION", "us-east-1"))
+    kwargs = {"region_name": region or os.environ.get("AWS_REGION", "us-east-1")}
+    if endpoint_url:
+        kwargs["endpoint_url"] = endpoint_url
+    return boto3.client("s3", **kwargs)
 
 
 # Default extensions for spreadsheet/Excel/CSV (configurable via --formats)
@@ -46,13 +49,14 @@ def list_object_keys(
     max_keys: int = 1000,
     region: str | None = None,
     allowed_extensions: List[str] | None = None,
+    endpoint_url: str | None = None,
 ) -> List[str]:
     """
     List object keys in the bucket under the given prefix.
     MaxKeys controls the PAGE size if we use paginator? 
     Actually, we want to stop after collecting max_keys items.
     """
-    client = get_s3_client(region=region)
+    client = get_s3_client(region=region, endpoint_url=endpoint_url)
     keys: List[str] = []
     
     # Use PaginationConfig to enforce strict limit on total items
@@ -80,6 +84,7 @@ def generate_presigned_url(
     key: str,
     expiry: int = DEFAULT_EXPIRY,
     region: str | None = None,
+    endpoint_url: str | None = None,
 ) -> str:
     """
     Generate a pre-signed GET URL for the object.
@@ -87,7 +92,7 @@ def generate_presigned_url(
     Returns:
         Pre-signed URL string.
     """
-    client = get_s3_client(region=region)
+    client = get_s3_client(region=region, endpoint_url=endpoint_url)
     try:
         url = client.generate_presigned_url(
             "get_object",
@@ -106,6 +111,7 @@ def get_presigned_urls_for_prefix(
     region: str | None = None,
     allowed_extensions: List[str] | None = None,
     limit: int | None = None,
+    endpoint_url: str | None = None,
 ) -> List[tuple[str, str]]:
     """
     List keys under prefix and return (key, presigned_url) pairs.
@@ -118,16 +124,17 @@ def get_presigned_urls_for_prefix(
         region=region,
         allowed_extensions=allowed_extensions,
         max_keys=limit if limit else 1000,
+        endpoint_url=endpoint_url,
     )
     return [
-        (key, generate_presigned_url(bucket, key, expiry=expiry, region=region))
+        (key, generate_presigned_url(bucket, key, expiry=expiry, region=region, endpoint_url=endpoint_url))
         for key in keys
     ]
 
 
-def download_file(bucket: str, key: str, local_path: Path, region: str | None = None) -> None:
+def download_file(bucket: str, key: str, local_path: Path, region: str | None = None, endpoint_url: str | None = None) -> None:
     """Download an S3 object to a local path."""
-    client = get_s3_client(region=region)
+    client = get_s3_client(region=region, endpoint_url=endpoint_url)
     local_path.parent.mkdir(parents=True, exist_ok=True)
     client.download_file(bucket, key, str(local_path))
 
@@ -139,6 +146,7 @@ def sync_prefix_to_local(
     region: str | None = None,
     allowed_extensions: List[str] | None = None,
     limit: int | None = None,
+    endpoint_url: str | None = None,
 ) -> List[Path]:
     """
     Sync files from S3 prefix to local_dir.
@@ -154,13 +162,14 @@ def sync_prefix_to_local(
         region=region,
         allowed_extensions=allowed_extensions,
         max_keys=limit if limit else 1000,
+        endpoint_url=endpoint_url,
     )
     
     if limit:
         keys = keys[:limit]
 
     synced_files: List[Path] = []
-    client = get_s3_client(region=region)
+    client = get_s3_client(region=region, endpoint_url=endpoint_url)
 
     with cli_ui.create_download_progress() as progress:
         task_id = progress.add_task(
@@ -185,7 +194,7 @@ def sync_prefix_to_local(
                     pass  # Re-download on any head failure
 
             if should_download:
-                download_file(bucket, key, target_path, region=region)
+                download_file(bucket, key, target_path, region=region, endpoint_url=endpoint_url)
 
             synced_files.append(target_path)
             progress.advance(task_id)
