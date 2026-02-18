@@ -186,20 +186,21 @@ python main.py [OPTIONS]
 
 ### Options
 
-| Flag                  | Description                                                             | Default                  | Example                |
-| --------------------- | ----------------------------------------------------------------------- | ------------------------ | ---------------------- |
-| `--concurrency`, `-c` | Max concurrent requests (semaphore limit)                               | `10`                     | `-c 20`                |
-| `--mode`, `-m`        | Test mode: `url`, `upload`, or `dual` (50/50 split)                     | `dual`                   | `-m upload`            |
-| `--limit`             | **(New)** Limit the number of files to process. Useful for quick tests. | None (all)               | `--limit 50`           |
-| `--local-dir`         | **(New)** Local directory to sync S3 files to (for `upload` mode).      | `./staging`              | `--local-dir ./files`  |
-| `--rate-limit`, `-r`  | Caps requests per minute (0 = no cap).                                  | `0`                      | `-r 60`                |
-| `--db`                | Path to SQLite DB for state and benchmarks.                             | `./intelli_extract.db`   | `--db ./test.db`       |
-| `--report`            | Path to output Markdown report.                                         | `./Executive_Summary.md` | `--report ./Report.md` |
-| `--report-only`       | Generate report from existing DB logic without running tests.           | `False`                  | `--report-only`        |
-| `--clean-db`          | **Destructive**: Clears all rows from the DB before running.            | `False`                  | `--clean-db`           |
-| `--bucket`            | S3 bucket name for file discovery.                                      | `intelli-extract...`     |                        |
-| `--prefix`            | S3 key prefix to filter files.                                          | `""` (root)              | `--prefix data/`       |
-| `--formats`           | Comma-separated file extensions to include.                             | `.xlsx,.xls,.csv,.ods`   | `--formats .xlsx`      |
+| Flag                  | Description                                                         | Default                  | Example                          |
+| --------------------- | ------------------------------------------------------------------- | ------------------------ | -------------------------------- |
+| `--concurrency`, `-c` | Max concurrent requests (semaphore limit)                           | `10`                     | `-c 20`                          |
+| `--mode`, `-m`        | Test mode: `url`, `upload`, or `dual` (50/50 split)                 | `dual`                   | `-m upload`                      |
+| `--limit`             | Limit the number of files to process. Useful for quick tests.       | None (all)               | `--limit 50`                     |
+| `--local-dir`         | Local directory to sync S3 files to (for `upload` mode).            | `./staging`              | `--local-dir ./files`            |
+| `--rate-limit`, `-r`  | Caps requests per minute (0 = no cap).                              | `0`                      | `-r 60`                          |
+| `--db`                | Path to SQLite DB for state and benchmarks.                         | `./intelli_extract.db`   | `--db ./test.db`                 |
+| `--report`            | Path to output Markdown report.                                     | `./Executive_Summary.md` | `--report ./Report.md`           |
+| `--report-only`       | Generate report from existing DB logic without running tests.       | `False`                  | `--report-only`                  |
+| `--clean-db`          | **Destructive**: Clears all rows from the DB before running.        | `False`                  | `--clean-db`                     |
+| `--bucket`            | S3 bucket name for file discovery.                                  | `intelli-extract...`     |                                  |
+| `--prefix`            | S3 key prefix to filter files.                                      | `""` (root)              | `--prefix data/`                 |
+| `--formats`           | Comma-separated file extensions to include.                         | `.xlsx,.xls,.csv,.ods`   | `--formats .xlsx`                |
+| `--s3-url`            | Custom S3-compatible endpoint URL (e.g. MinIO). Defaults to AWS S3. | None (AWS S3)            | `--s3-url http://localhost:9000` |
 
 ### Common Scenarios
 
@@ -237,6 +238,13 @@ Wipes the database history and starts a fresh run.
 ```bash
 python main.py --clean-db
 python main.py --mode dual
+```
+
+**6. Custom S3-Compatible Endpoint (e.g. MinIO)**
+Points the runner at a local or self-hosted S3-compatible store instead of AWS S3.
+
+```bash
+python main.py --s3-url http://localhost:9000 --bucket my-local-bucket --mode dual
 ```
 
 ---
@@ -279,12 +287,13 @@ The reporter reads from the same SQLite store used by the orchestrator, so all m
 | File            | Responsibility                                                                                                                                                                                                                  |
 | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `main.py`       | Orchestrator: test loop, concurrency (semaphore), mode (url/upload/dual), resume logic, calls S3, API, DB, Reporter.                                                                                                            |
-| `s3_manager.py` | Boto3: list objects in S3 bucket, generate pre-signed URLs for file discovery.                                                                                                                                                  |
+| `s3_manager.py` | Boto3: list objects in S3 bucket, generate pre-signed URLs for file discovery. Supports custom S3-compatible endpoints via `endpoint_url`.                                                                                      |
 | `api_client.py` | Async HTTP: both endpoints with custom headers (X-Access-Key, X-Signature, X-Secret-Message).                                                                                                                                   |
 | `db_manager.py` | SQLite: schema (e.g. file_name, endpoint_used, status, latency_ms, response_body), indexes for fast resume and aggregation. **Uses WAL (Write-Ahead Logging)** so async writes do not lock the DB during high-concurrency runs. |
 | `reporter.py`   | Markdown report generator: reads DB, computes P95/FPM, produces Executive Summary (optionally with LLM).                                                                                                                        |
 | `auth.py`       | HeaderFactory for API auth headers.                                                                                                                                                                                             |
 | `client.py`     | Low-level async client used by `api_client`.                                                                                                                                                                                    |
+| `cli_ui.py`     | Rich-based terminal UI: Gemini-style ASCII banner, themed output helpers (info/warning/error/success/step), progress bars, and the post-run summary table.                                                                      |
 
 ---
 
