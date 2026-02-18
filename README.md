@@ -11,6 +11,12 @@ The framework runs a **hybrid load test** (configurable 50/50 or custom split) a
 
 ---
 
+## CLI Preview
+
+![Intelli-Benchmark CLI](docs/cli_preview.png)
+
+---
+
 ## Quick Start
 
 A judge can run the full suite in three commands:
