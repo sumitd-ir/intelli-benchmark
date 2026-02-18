@@ -11,7 +11,7 @@ from typing import List
 
 import boto3
 from botocore.exceptions import ClientError
-from tqdm import tqdm
+import cli_ui
 
 DEFAULT_BUCKET = "intelli-extract-tech-challenge-891377258245"
 DEFAULT_EXPIRY = 3600  # seconds
@@ -160,49 +160,34 @@ def sync_prefix_to_local(
         keys = keys[:limit]
 
     synced_files: List[Path] = []
-    
-    # print(f"Syncing {len(keys)} files from s3://{bucket}/{prefix} to {local_dir} ...")
-    
-    # Calculate total size for better progress? For now just file count.
-    with tqdm(total=len(keys), desc=f"Syncing from s3://{bucket}/{prefix}", unit="file") as pbar:
-        # Re-create client inside loop/function to avoid thread issues if any, though here it is single threaded sync
-        client = get_s3_client(region=region)
+    client = get_s3_client(region=region)
+
+    with cli_ui.create_download_progress() as progress:
+        task_id = progress.add_task(
+            f"[cyan]Syncing from s3://{bucket}/{prefix or '(root)'}[/cyan]",
+            total=len(keys),
+        )
 
         for key in keys:
-            # Flatten structure or keep? "folder/file.ext" -> "folder_file.ext" to avoid deep nesting issues?
-            # Or just keep base name if unique?
-            # Let's keep original structure relative to prefix, or just flat if simple.
-            # For simplicity in this specific project context (often flat buckets), let's use the basename
-            # but warn if duplicates? 
-            # Actually safer to keep relative path structure if possible, but strict requirements say "dataset is in production under brand-specific buckets".
-            # So "BrandA/file1.xlsx".
-            # Let's construct local path preserving hierarchy.
-            
-            # If prefix is "data/", and key is "data/brand/file.xlsx", we want "brand/file.xlsx" inside local_dir?
-            # Or just full key? Let's use full key to be safe against collisions.
+            # Preserve S3 key hierarchy under local_dir to avoid collisions.
             safe_key_path = Path(key)
-            # Remove drive letter if any (unlikely in S3 key) 
-            
             target_path = local_dir_path / safe_key_path
-            
-            # Check if exists and size matches
+
+            # Skip download if local file already matches remote size.
             should_download = True
             if target_path.exists():
-                # efficient check: size
                 try:
                     resp = client.head_object(Bucket=bucket, Key=key)
                     remote_size = resp["ContentLength"]
                     if target_path.stat().st_size == remote_size:
                         should_download = False
                 except Exception:
-                    # If head fails, re-download to be safe
-                    pass
-            
+                    pass  # Re-download on any head failure
+
             if should_download:
-                # print(f"Downloading {key} -> {target_path}")
                 download_file(bucket, key, target_path, region=region)
-                
+
             synced_files.append(target_path)
-            pbar.update(1)
-            
+            progress.advance(task_id)
+
     return synced_files

@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
-from tqdm.asyncio import tqdm # Use tqdm.asyncio if preferred or just standard tqdm with as_completed
 
 # Load env vars from .env file if present
 load_dotenv()
@@ -33,8 +32,8 @@ from db_manager import (
     is_already_success,
 )
 from reporter import generate_report
-from reporter import generate_report
 from s3_manager import DEFAULT_BUCKET, DEFAULT_ALLOWED_EXTENSIONS, get_presigned_urls_for_prefix, sync_prefix_to_local
+import cli_ui
 
 RUN_MODE = Literal["url", "upload", "dual"]
 
@@ -87,39 +86,41 @@ async def run_one(
     return result.success
 
 
-
-
-
 def _sync_phase(args, allowed_extensions) -> dict[str, Path]:
     """Phase 1: Sync S3 files to local staging if needed."""
     local_files_map: dict[str, Path] = {}
     try:
         if args.mode in ("upload", "dual"):
-            synced_paths = sync_prefix_to_local(
-                bucket=args.bucket,
-                prefix=args.prefix,
-                local_dir=args.local_dir,
-                allowed_extensions=allowed_extensions,
-                limit=args.limit,
-            )
+            with cli_ui.console.status("[bold green]Syncing files from S3..."):
+                synced_paths = sync_prefix_to_local(
+                    bucket=args.bucket,
+                    prefix=args.prefix,
+                    local_dir=args.local_dir,
+                    allowed_extensions=allowed_extensions,
+                    limit=args.limit,
+                )
             for p in synced_paths:
                 local_files_map[p.name] = p
+            cli_ui.print_success(f"Synced {len(synced_paths)} files to {args.local_dir}")
     except Exception as e:
-        print(f"Sync failed: {e}")
+        cli_ui.print_error(f"Sync failed: {e}")
     return local_files_map
 
 
 def _discovery_phase(args, allowed_extensions) -> list[tuple[str, str]]:
     """Phase 2: Discover files/URLs from S3."""
     try:
-        return get_presigned_urls_for_prefix(
-            bucket=args.bucket,
-            prefix=args.prefix,
-            allowed_extensions=allowed_extensions if allowed_extensions else None,
-            limit=args.limit,
-        )
+        with cli_ui.console.status("[bold green]Discovering S3 objects..."):
+            urls = get_presigned_urls_for_prefix(
+                bucket=args.bucket,
+                prefix=args.prefix,
+                allowed_extensions=allowed_extensions if allowed_extensions else None,
+                limit=args.limit,
+            )
+        cli_ui.print_info(f"Discovered {len(urls)} objects in S3")
+        return urls
     except Exception as e:
-        print(f"S3 discovery failed: {e}. Run with --mode upload and local files, or set AWS credentials.")
+        cli_ui.print_error(f"S3 discovery failed: {e}. Run with --mode upload and local files, or set AWS credentials.")
         return []
 
 
@@ -134,7 +135,7 @@ def _create_task_for_item(args, file_name, presigned_url, local_files_map):
         if local_path and local_path.exists():
             tasks.append(("upload", file_name, None, local_path))
         elif args.mode == "upload":
-             print(f"Warning: Local file for {file_name} not found in {args.local_dir}. Skipping upload test.")
+             cli_ui.print_warning(f"Local file for {file_name} not found in {args.local_dir}. Skipping upload test.")
     return tasks
 
 
@@ -157,10 +158,15 @@ def _filter_resumable_tasks(args, tasks) -> list[tuple[EndpointMode, str, str | 
             continue
         to_run.append((mode, file_name, url, path))
     conn.close()
+    
+    skipped = len(tasks) - len(to_run)
+    if skipped > 0:
+        cli_ui.print_info(f"Skipping {skipped} tasks already completed successfully.")
+    
     return to_run
 
 
-async def _execute_tasks(args, client, semaphore, to_run) -> float:
+async def _execute_tasks(args, client, semaphore, to_run) -> tuple[float, int, int]:
     """Phase 5: Execute tasks with progress bar."""
     total = len(to_run)
     start = time.perf_counter()
@@ -181,22 +187,28 @@ async def _execute_tasks(args, client, semaphore, to_run) -> float:
     success_count = 0
     fail_count = 0
 
-    for f in tqdm(asyncio.as_completed(coros), total=total, desc="Running tests", unit="req"):
-        is_success = await f
-        if is_success:
-            success_count += 1
-        else:
-            fail_count += 1
+    with cli_ui.create_progress() as progress:
+        task_id = progress.add_task("[cyan]Running tests...", total=total)
+        
+        for f in asyncio.as_completed(coros):
+            is_success = await f
+            if is_success:
+                success_count += 1
+            else:
+                fail_count += 1
+            progress.advance(task_id)
 
     elapsed_sec = time.perf_counter() - start
-    print(f"Completed {len(to_run)} tasks in {elapsed_sec:.2f}s | Success: {success_count} | Fail: {fail_count}")
-    return elapsed_sec
+    return elapsed_sec, success_count, fail_count
 
 
 async def orchestrator_main(args) -> None:
+    cli_ui.print_banner()
+    cli_ui.print_header("Intelli-Benchmark", "Dual-Path Test Runner for intelliExtract API")
+
     header_factory = HeaderFactory()
     if not header_factory.is_configured():
-        print("Warning: INTELLI_ACCESS_KEY / INTELLI_SIGNATURE / INTELLI_SECRET_MESSAGE not set.")
+        cli_ui.print_warning("INTELLI_ACCESS_KEY / INTELLI_SIGNATURE / INTELLI_SECRET_MESSAGE not set.")
 
     conn = get_connection(args.db)
     init_schema(conn)
@@ -207,23 +219,36 @@ async def orchestrator_main(args) -> None:
         allowed_extensions = [e.strip() for e in args.formats.split(",") if e.strip()]
 
     # Phases 1-4: Setup and Planning
+    cli_ui.print_step("Phase 1: S3 Sync")
     local_files_map = _sync_phase(args, allowed_extensions)
+    
+    cli_ui.print_step("Phase 2: Discovery")
     url_tuples = _discovery_phase(args, allowed_extensions)
+    
+    cli_ui.print_step("Phase 3: Task Compilation")
     tasks = _build_task_list(args, url_tuples, local_files_map)
+    cli_ui.print_info(f"Total potential tasks: {len(tasks)}")
+    
     to_run = _filter_resumable_tasks(args, tasks)
 
     elapsed_sec: float | None = None
+    success_count = 0
+    fail_count = 0
+
     if not to_run:
         if not tasks:
-            print("No work to do: no files from S3 (discovery failed or bucket empty). Set AWS credentials and ensure the bucket is accessible.")
+            cli_ui.print_warning("No work to do: no files from S3 (discovery failed or bucket empty).")
         else:
-            print("No work to do (all tasks already succeeded in DB).")
+            cli_ui.print_success("All tasks already completed successfully.")
+            # Still valid to generate a report, maybe? 
     else:
         # Phase 5: Execution
+        cli_ui.print_step(f"Phase 4: Execution ({len(to_run)} tasks)")
         client = IntelliExtractClient(header_factory=header_factory)
         semaphore = asyncio.Semaphore(args.concurrency)
-        elapsed_sec = await _execute_tasks(args, client, semaphore, to_run)
+        elapsed_sec, success_count, fail_count = await _execute_tasks(args, client, semaphore, to_run)
 
+    cli_ui.print_step("Phase 5: Reporting")
     generate_report(
         args.db,
         args.report,
@@ -231,16 +256,28 @@ async def orchestrator_main(args) -> None:
         concurrency=args.concurrency,
         run_duration_sec=elapsed_sec,
     )
-    print(f"Report written to {args.report}")
+    
+    if elapsed_sec is not None:
+         cli_ui.print_summary_table(
+            duration_sec=elapsed_sec,
+            success_count=success_count,
+            fail_count=fail_count,
+            concurrency=args.concurrency,
+            mode=args.mode,
+            report_path=args.report
+        )
+    else:
+        cli_ui.print_success(f"Report updated at {args.report}")
 
 
 def main():
     args = parse_args()
     if getattr(args, "clean_db", False):
         deleted = clean_db(args.db)
-        print(f"Cleaned DB: {deleted} row(s) removed from {args.db}")
+        cli_ui.console.print(f"[bold green]Cleaned DB:[/bold green] {deleted} row(s) removed from {args.db}")
         return
     if args.report_only:
+        cli_ui.print_header("Intelli-Benchmark", "Report Generation Only")
         generate_report(
             args.db,
             args.report,
@@ -248,12 +285,12 @@ def main():
             concurrency=args.concurrency,
             run_duration_sec=None,
         )
-        print(f"Report written to {args.report}")
+        cli_ui.print_success(f"Report written to {args.report}")
         return
     try:
         asyncio.run(orchestrator_main(args))
     except (KeyboardInterrupt, asyncio.CancelledError):
-        print("\nInterrupted. Generating report from current DB state...")
+        cli_ui.print_warning("\nInterrupted. Generating report from current DB state...")
         generate_report(
             args.db,
             args.report,
@@ -261,7 +298,7 @@ def main():
             concurrency=args.concurrency,
             run_duration_sec=None,
         )
-        print(f"Report written to {args.report}")
+        cli_ui.print_success(f"Interrupted report written to {args.report}")
         sys.exit(130)
 
 
