@@ -141,8 +141,8 @@ sequenceDiagram
 
 ```bash
 python -m venv .venv
-.venv\Scripts\activate          # Windows
-# source .venv/bin/activate     # Linux/macOS
+source .venv\Scripts\activate          # Windows
+# source .venv/bin/activate            # Linux/macOS
 ```
 
 ### 2. Dependencies
