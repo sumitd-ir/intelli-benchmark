@@ -141,7 +141,8 @@ sequenceDiagram
 
 ```bash
 python -m venv .venv
-source .venv\Scripts\activate          # Windows
+source .venv/Scripts/activate          # Windows(Bash)
+.venv\Scripts\activate                 # Windows(Powershell)
 # source .venv/bin/activate            # Linux/macOS
 ```
 
