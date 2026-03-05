@@ -62,11 +62,12 @@ class IntelliExtractClient(_Client):
         self,
         base_url: str = BASE_URL,
         header_factory: HeaderFactory | None = None,
+        session: aiohttp.ClientSession | None = None,
         max_retries: int = DEFAULT_MAX_RETRIES,
         backoff_base_sec: float = DEFAULT_BASE_DELAY_SEC,
         backoff_max_sec: float = DEFAULT_MAX_DELAY_SEC,
     ) -> None:
-        super().__init__(base_url=base_url, header_factory=header_factory or HeaderFactory())
+        super().__init__(base_url=base_url, header_factory=header_factory or HeaderFactory(), session=session)
         self._max_retries = max_retries
         self._backoff_base = backoff_base_sec
         self._backoff_max = backoff_max_sec

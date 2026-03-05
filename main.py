@@ -13,6 +13,7 @@ import argparse
 import asyncio
 import sys
 import time
+import aiohttp
 from pathlib import Path
 from typing import Literal
 
@@ -81,6 +82,8 @@ async def run_one(
         endpoint_used=mode,
         status=status,
         latency_ms=result.latency_ms if result.success else None,
+        server_processing_ms=result.server_processing_ms if result.success else None,
+        network_overhead_ms=result.network_overhead_ms if result.success else None,
         response_body=(result.response_body or "")[:65535],  # cap for SQLite
         error_type=result.error_type,
     )
@@ -236,8 +239,6 @@ async def orchestrator_main(args) -> None:
     to_run = _filter_resumable_tasks(args, tasks)
 
     elapsed_sec: float | None = None
-    success_count = 0
-    fail_count = 0
 
     if not to_run:
         if not tasks:
@@ -248,12 +249,13 @@ async def orchestrator_main(args) -> None:
     else:
         # Phase 5: Execution
         cli_ui.print_step(f"Phase 4: Execution ({len(to_run)} tasks)")
-        client = IntelliExtractClient(header_factory=header_factory)
-        semaphore = asyncio.Semaphore(args.concurrency)
-        elapsed_sec, success_count, fail_count = await _execute_tasks(args, client, semaphore, to_run)
+        async with aiohttp.ClientSession() as session:
+            client = IntelliExtractClient(header_factory=header_factory, session=session)
+            semaphore = asyncio.Semaphore(args.concurrency)
+            elapsed_sec, _, _ = await _execute_tasks(args, client, semaphore, to_run)
 
     cli_ui.print_step("Phase 5: Reporting")
-    generate_report(
+    endpoint_stats = generate_report(
         args.db,
         args.report,
         run_mode=args.mode,
@@ -264,8 +266,7 @@ async def orchestrator_main(args) -> None:
     if elapsed_sec is not None:
          cli_ui.print_summary_table(
             duration_sec=elapsed_sec,
-            success_count=success_count,
-            fail_count=fail_count,
+            endpoint_stats=endpoint_stats,
             concurrency=args.concurrency,
             mode=args.mode,
             report_path=args.report

@@ -14,8 +14,9 @@ from db_manager import (
     COL_ENDPOINT,
     COL_FILE,
     COL_LATENCY_MS,
+    COL_SERVER_PROCESSING_MS,
+    COL_NETWORK_OVERHEAD_MS,
     COL_RESPONSE_BODY,
-    COL_STATUS,
     COL_STATUS,
     COL_TS,
     STATUS_SUCCESS,
@@ -229,23 +230,59 @@ def _write_run_details(lines: list[str], report_ts: str, start_ts: str | None, e
     lines.append(f"- **Concurrency:** {concurrency}\n")
 
 
+def _write_benchmark_summary(lines: list[str], endpoint_metrics: dict, duration_sec: float | None):
+    lines.append("## Benchmark Summary")
+    lines.append("| Metric | Value |")
+    lines.append("|--------|-------|")
+    if duration_sec is not None:
+        lines.append(f"| **Duration** | {duration_sec:.2f}s |")
+    
+    total_tasks = sum(m["total"] for m in endpoint_metrics.values())
+    lines.append(f"| **Total Tasks** | {total_tasks} |")
+    
+    for endpoint, m in endpoint_metrics.items():
+        if m["total"] > 0:
+            rate = (m["successes"] / m["total"]) * 100
+            lines.append(f"| **`/{endpoint}` Success** | {m['successes']} / {m['total']} ({rate:.1f}%) |")
+        
+    lines.append("")
+
+
 def _get_metrics_for_endpoint(conn, endpoint: str, duration_min: float | None) -> dict:
     rows = get_runs_by_endpoint(conn, endpoint)
     total = len(rows)
     successes = [r for r in rows if r[COL_STATUS] == STATUS_SUCCESS]
+    
     latencies = [r[COL_LATENCY_MS] for r in successes if r[COL_LATENCY_MS] is not None]
+    server_ms = [r[COL_SERVER_PROCESSING_MS] for r in successes if r[COL_SERVER_PROCESSING_MS] is not None]
+    network_ms = [r[COL_NETWORK_OVERHEAD_MS] for r in successes if r[COL_NETWORK_OVERHEAD_MS] is not None]
+    
     fail_count = total - len(successes)
-    p95 = p95_latency_ms(latencies)
-    p99 = p99_latency_ms(latencies)
+    
     throughput = (len(successes) / duration_min) if duration_min and duration_min > 0 else None
     
+    def _stats(arr):
+        if not arr:
+            return {"p50": None, "p90": None, "p95": None, "p99": None, "mean": None, "list": []}
+        return {
+            "p50": _percentile(arr, 0.50),
+            "p90": _percentile(arr, 0.90),
+            "p95": _percentile(arr, 0.95),
+            "p99": _percentile(arr, 0.99),
+            "mean": statistics.mean(arr),
+            "list": arr
+        }
+        
     return {
         "total": total,
         "successes": len(successes),
         "failures": fail_count,
-        "latencies": latencies, # Needed for mean calculation in report
-        "p95": p95,
-        "p99": p99,
+        "total_latency": _stats(latencies),
+        "server_latency": _stats(server_ms),
+        "network_latency": _stats(network_ms),
+        "latencies": latencies, # Needed for mean calculation in AI summary
+        "p95": _percentile(latencies, 0.95), # Needed for AI summary
+        "p99": _percentile(latencies, 0.99), # Needed for AI summary
         "throughput": throughput,
     }
 
@@ -256,11 +293,19 @@ def _write_endpoint_section(lines: list[str], endpoint: str, m: dict, duration_m
     lines.append(f"- Successes: {m['successes']}")
     lines.append(f"- Failures: {m['failures']}")
     lines.append("")
-    lines.append("### Latency (formal notation)")
-    lines.append(f"- $L_{{p95}}$ (95th percentile): **{m['p95']:.2f} ms**" if m['p95'] is not None else r"- $L_{p95}$: N/A")
-    lines.append(f"- $L_{{p99}}$ (99th percentile): **{m['p99']:.2f} ms**" if m['p99'] is not None else r"- $L_{p99}$: N/A")
-    if m['latencies']:
-        lines.append(f"- Mean: {statistics.mean(m['latencies']):.2f} ms")
+    lines.append("### Latency Breakdown")
+    lines.append("| Component | Mean (ms) | P50 (ms) | P90 (ms) | P95 (ms) | P99 (ms) |")
+    lines.append("|-----------|-----------|----------|----------|----------|----------|")
+    
+    def _row(name, stats):
+        if not stats["list"]:
+            return f"| {name} | N/A | N/A | N/A | N/A | N/A |"
+        return f"| {name} | {stats['mean']:.2f} | {stats['p50']:.2f} | {stats['p90']:.2f} | {stats['p95']:.2f} | {stats['p99']:.2f} |"
+        
+    lines.append(_row("**Total Latency** (client round-trip)", m["total_latency"]))
+    lines.append(_row("Server Processing (App Runner)", m["server_latency"]))
+    lines.append(_row("Client Network Overhead (TCP/TLS/transfer)", m["network_latency"]))
+    
     lines.append("")
     if duration_min and duration_min > 0:
         lines.append("### Throughput")
@@ -298,7 +343,7 @@ def generate_report(
     run_mode: str = "dual",
     concurrency: int = 10,
     run_duration_sec: float | None = None,
-) -> None:
+) -> dict:
     """Read SQLite, compute metrics, and write Executive Summary."""
     conn = get_connection(db_path)
     output_path = Path(output_path)
@@ -320,6 +365,12 @@ def generate_report(
     for endpoint in ("url", "upload"):
         m = _get_metrics_for_endpoint(conn, endpoint, duration_min)
         endpoint_metrics[endpoint] = m
+        
+    duration_sec_actual = duration_min * 60.0 if duration_min else None
+    _write_benchmark_summary(lines, endpoint_metrics, duration_sec_actual)
+
+    for endpoint in ("url", "upload"):
+        m = endpoint_metrics[endpoint]
         _write_endpoint_section(lines, endpoint, m, duration_min)
 
     _write_failure_breakdown(lines, conn)
@@ -335,3 +386,4 @@ def generate_report(
 
     conn.close()
     output_path.write_text("\n".join(lines), encoding="utf-8")
+    return endpoint_metrics

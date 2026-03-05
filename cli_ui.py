@@ -181,15 +181,12 @@ def create_download_progress() -> Progress:
 
 def print_summary_table(
     duration_sec: float,
-    success_count: int,
-    fail_count: int,
+    endpoint_stats: dict,
     concurrency: int,
     mode: str,
     report_path: str,
 ):
     """Print a styled summary table of the benchmark run."""
-    total = success_count + fail_count
-    success_rate = (success_count / total * 100) if total > 0 else 0.0
 
     table = Table(
         title=f"[{_STYLE_ACCENT}]Benchmark Summary[/{_STYLE_ACCENT}]",
@@ -204,10 +201,20 @@ def print_summary_table(
     table.add_column("Value", style="bold white", no_wrap=True)
 
     table.add_row("Duration",     f"{duration_sec:.2f}s")
+    
+    total = sum(stats["successes"] + stats["failures"] for stats in endpoint_stats.values())
     table.add_row("Total Tasks",  str(total))
-    table.add_row("Successes",    f"[green]{success_count}[/green]")
-    table.add_row("Failures",     f"[red]{fail_count}[/red]")
-    table.add_row("Success Rate", f"{success_rate:.1f}%")
+    
+    for endpoint, stats in endpoint_stats.items():
+        succ = stats["successes"]
+        fail = stats["failures"]
+        ep_total = succ + fail
+        rate = (succ / ep_total * 100) if ep_total > 0 else 0.0
+        
+        table.add_row(f"`/{endpoint}` Success", f"[green]{succ}[/green] / {ep_total} ({rate:.1f}%)")
+        if fail > 0:
+            table.add_row(f"`/{endpoint}` Failures", f"[red]{fail}[/red]")
+            
     table.add_row("Concurrency",  str(concurrency))
     table.add_row("Mode",         mode)
     table.add_row("Report",       report_path)

@@ -17,6 +17,8 @@ COL_STATUS = "status"
 COL_LATENCY_MS = "latency_ms"
 COL_RESPONSE_BODY = "response_body"
 COL_ERROR_TYPE = "error_type"
+COL_SERVER_PROCESSING_MS = "server_processing_ms"
+COL_NETWORK_OVERHEAD_MS = "network_overhead_ms"
 COL_TS = "created_at"
 
 EndpointMode = Literal["url", "upload"]
@@ -46,17 +48,25 @@ def init_schema(conn: sqlite3.Connection) -> None:
             {COL_ENDPOINT} TEXT NOT NULL,
             {COL_STATUS} TEXT NOT NULL,
             {COL_LATENCY_MS} REAL,
+            {COL_SERVER_PROCESSING_MS} REAL,
+            {COL_NETWORK_OVERHEAD_MS} REAL,
             {COL_RESPONSE_BODY} TEXT,
             {COL_ERROR_TYPE} TEXT,
             {COL_TS} TEXT DEFAULT (datetime('now'))
         )
         """
     )
-    # Migration: add error_type column if missing (for existing DBs)
     try:
         conn.execute(f"ALTER TABLE {TABLE} ADD COLUMN {COL_ERROR_TYPE} TEXT")
     except sqlite3.OperationalError:
-        # Expected if column already exists
+        pass
+    try:
+        conn.execute(f"ALTER TABLE {TABLE} ADD COLUMN {COL_SERVER_PROCESSING_MS} REAL")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute(f"ALTER TABLE {TABLE} ADD COLUMN {COL_NETWORK_OVERHEAD_MS} REAL")
+    except sqlite3.OperationalError:
         pass
 
     # Fast resume: skip if (file_name, endpoint_used) already success
@@ -92,16 +102,18 @@ def insert_result(
     endpoint_used: str,
     status: str,
     latency_ms: float | None,
+    server_processing_ms: float | None,
+    network_overhead_ms: float | None,
     response_body: str,
     error_type: str | None = None,
 ) -> None:
     """Insert one run result."""
     conn.execute(
         f"""
-        INSERT INTO {TABLE} ({COL_FILE}, {COL_ENDPOINT}, {COL_STATUS}, {COL_LATENCY_MS}, {COL_RESPONSE_BODY}, {COL_ERROR_TYPE})
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO {TABLE} ({COL_FILE}, {COL_ENDPOINT}, {COL_STATUS}, {COL_LATENCY_MS}, {COL_SERVER_PROCESSING_MS}, {COL_NETWORK_OVERHEAD_MS}, {COL_RESPONSE_BODY}, {COL_ERROR_TYPE})
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (file_name, endpoint_used, status, latency_ms, response_body, error_type),
+        (file_name, endpoint_used, status, latency_ms, server_processing_ms, network_overhead_ms, response_body, error_type),
     )
     conn.commit()
 
